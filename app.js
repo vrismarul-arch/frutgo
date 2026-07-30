@@ -12,7 +12,37 @@ const { notFound, errorHandler } = require("./middleware/errorHandler");
 
 const app = express();
 
-app.use(cors());
+// ===========================
+// CORS
+// ===========================
+// List every frontend origin that's allowed to call this API.
+// Add your deployed frontend URL here once it's live (e.g. Vercel/Netlify/Render URL).
+const allowedOrigins = [
+  "http://localhost:5173", // Vite dev server
+  "http://localhost:3000", // in case you also run CRA/other tooling
+  // "https://your-frontend-domain.com", // 👈 add your production frontend URL here
+];
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    // allow requests with no origin (curl, Postman, server-to-server)
+    if (!origin) return callback(null, true);
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error(`Origin ${origin} not allowed by CORS`));
+  },
+  credentials: true,
+};
+
+// NOTE: mounting cors() as global middleware is enough — it automatically
+// intercepts and responds to OPTIONS preflight requests for every route.
+// (No need for a separate app.options("*", ...) line — on Express 5 that
+// wildcard syntax actually throws at startup and crashes the server.)
+app.use(cors(corsOptions));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
