@@ -19,7 +19,7 @@ const app = express();
 // Add your deployed frontend URL here once it's live (e.g. Vercel/Netlify/Render URL).
 const allowedOrigins = [
   "http://localhost:5173", // Vite dev server
-  "http://localhost:3000", // in case you also run CRA/other tooling
+  "https://kithandkin.netlify.app", // in case you also run CRA/other tooling
   // "https://your-frontend-domain.com", // 👈 add your production frontend URL here
 ];
 
