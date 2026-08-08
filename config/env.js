@@ -7,5 +7,5 @@ module.exports = {
   DB_NAME: process.env.DB_NAME,
   DB_USER: process.env.DB_USER,
   DB_PASSWORD: process.env.DB_PASSWORD,
-  JWT_SECRET: process.env.JWT_SECRET || "change_this_secret_in_production",
+  JWT_USER_SECRET: process.env.JWT_USER_SECRET || "change_this_secret_in_production",
 };

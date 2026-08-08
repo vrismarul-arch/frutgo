@@ -15,7 +15,7 @@ const app = express();
 // CORS
 // ===========================
 const allowedOrigins = [
-  // "http://localhost:5173", // Vite dev server
+  "http://localhost:5173", // Vite dev server
   "https://frutgodelivery.netlify.app", // Vite dev server
   // 👈 add your production frontend URL here
 ];

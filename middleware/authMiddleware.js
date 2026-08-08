@@ -10,7 +10,7 @@ const requireAdminAuth = (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = jwt.verify(token, process.env.JWT_USER_SECRET);
     req.admin = decoded;
     next();
   } catch (err) {
