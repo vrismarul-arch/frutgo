@@ -1,8 +1,15 @@
 const productModel = require("../models/productModel");
 const { uploadProductImage, deleteProductImage } = require("../utils/uploadToSupabase");
 
-// hasFile = true when req.file exists (multipart upload), so a missing
-// body.image isn't treated as an error in that case
+// All unit types supported by the storefront
+const VALID_UNITS = ["weight", "pc", "ml", "daily", "weekly", "monthly"];
+
+// Normalize unit - handles undefined/null and ensures valid unit
+const normalizeUnit = (unit) => {
+  if (!unit) return "weight";
+  return VALID_UNITS.includes(unit) ? unit : "weight";
+};
+
 const validateProductBody = (body, hasFile) => {
   const errors = {};
 
@@ -39,20 +46,18 @@ const validateProductBody = (body, hasFile) => {
     }
   }
 
-  if (
-    !Array.isArray(variants) ||
-    variants.length === 0 ||
-    variants.some(
-      (v) =>
-        !v.label ||
-        !String(v.label).trim() ||
-        v.price === undefined ||
-        v.price === null ||
-        Number(v.price) < 0 ||
-        (v.unit !== undefined && !["weight", "pc"].includes(v.unit))
-    )
-  ) {
-    errors.variants = "Every option needs a valid unit, label, and price";
+  if (!Array.isArray(variants) || variants.length === 0) {
+    errors.variants = "At least one product option is required";
+  } else {
+    const invalidVariant = variants.some((v) => {
+      const hasValidLabel = v.label && String(v.label).trim();
+      const hasValidPrice = v.price !== undefined && v.price !== null && Number(v.price) >= 0;
+      return !hasValidLabel || !hasValidPrice;
+    });
+    
+    if (invalidVariant) {
+      errors.variants = "Every option needs a valid label and price";
+    }
   }
 
   return { errors, parsedVariants: variants };
@@ -71,8 +76,6 @@ const getProducts = async (req, res) => {
 };
 
 // GET /api/admin/products/special-offers
-// Must be registered BEFORE /:id in productRoutes.js, or Express will
-// treat "special-offers" as a product id and hit getProductById instead.
 const getSpecialOffers = async (req, res) => {
   try {
     const products = await productModel.findSpecialOffers();
@@ -115,6 +118,16 @@ const createProduct = async (req, res) => {
       uploadedUrl = imageUrl;
     }
 
+    // Ensure variants have proper units and labels
+    const normalizedVariants = parsedVariants.map((v) => {
+      const unit = normalizeUnit(v.unit);
+      return {
+        unit: unit,
+        label: String(v.label).trim(),
+        price: Number(v.price),
+      };
+    });
+
     const product = await productModel.create({
       name: name.trim(),
       category,
@@ -123,16 +136,11 @@ const createProduct = async (req, res) => {
       status,
       is_special_offer: is_special_offer === "true" || is_special_offer === true,
       discount_percent: discount_percent ? Number(discount_percent) : 0,
-      variants: parsedVariants.map((v) => ({
-        unit: v.unit === "pc" ? "pc" : "weight",
-        label: String(v.label).trim(),
-        price: Number(v.price),
-      })),
+      variants: normalizedVariants,
     });
     res.status(201).json({ product, message: "Product created" });
   } catch (err) {
     console.error("createProduct error:", err);
-    // Roll back the uploaded file if DB insert failed after upload succeeded
     if (uploadedUrl) await deleteProductImage(uploadedUrl);
     res.status(500).json({ message: "Failed to create product" });
   }
@@ -161,6 +169,16 @@ const updateProduct = async (req, res) => {
       uploadedUrl = imageUrl;
     }
 
+    // Ensure variants have proper units and labels
+    const normalizedVariants = parsedVariants.map((v) => {
+      const unit = normalizeUnit(v.unit);
+      return {
+        unit: unit,
+        label: String(v.label).trim(),
+        price: Number(v.price),
+      };
+    });
+
     const product = await productModel.update(req.params.id, {
       name: name.trim(),
       category,
@@ -169,15 +187,9 @@ const updateProduct = async (req, res) => {
       status,
       is_special_offer: is_special_offer === "true" || is_special_offer === true,
       discount_percent: discount_percent ? Number(discount_percent) : 0,
-      variants: parsedVariants.map((v) => ({
-        unit: v.unit === "pc" ? "pc" : "weight",
-        label: String(v.label).trim(),
-        price: Number(v.price),
-      })),
+      variants: normalizedVariants,
     });
 
-    // Clean up the old image only after the update succeeds, and only
-    // if a new file replaced it
     if (req.file && existing.image) {
       await deleteProductImage(existing.image);
     }

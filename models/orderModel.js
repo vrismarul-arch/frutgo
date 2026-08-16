@@ -1,6 +1,19 @@
 const pool = require("../config/db");
 const productModel = require("./productModel");
 
+/* -------------------------------------------------------------------------
+ * REQUIRED MIGRATION before this file works:
+ *
+ *   ALTER TABLE order_items
+ *     ADD COLUMN subscription_start_date DATE NULL AFTER qty,
+ *     ADD COLUMN subscription_end_date   DATE NULL AFTER subscription_start_date;
+ *
+ * These two columns are NULL for regular (weight/pc/ml) items and populated
+ * only for Daily/Weekly/Monthly subscription items, so the order's item
+ * rows carry their own delivery window instead of that info living only in
+ * the frontend (which never reaches the backend/admin otherwise).
+ * ---------------------------------------------------------------------- */
+
 const withRetry = async (fn, retries = 1) => {
   try {
     return await fn();
@@ -16,6 +29,31 @@ const withRetry = async (fn, retries = 1) => {
 };
 
 const ALLOWED_STATUSES = ["pending", "confirmed", "out_for_delivery", "delivered", "cancelled"];
+
+// Subscription plan labels (must match the admin's UNIT_CONFIG fixedLabel
+// values exactly: "1 Day", "1 Week", "1 Month") and how many days each runs.
+const SUBSCRIPTION_PLAN_DAYS = {
+  "1 Day": 1,
+  "1 Week": 7,
+  "1 Month": 30,
+};
+
+const toISODate = (d) => d.toISOString().split("T")[0];
+
+// Computes { start, end } ISO date strings for a subscription item, based
+// on the ORDER's delivery date (the single source of truth — never trusts
+// any date the client might have pre-computed and sent up). Returns
+// { start: null, end: null } for non-subscription variants.
+const getSubscriptionWindow = (variantLabel, orderDeliveryDate) => {
+  const days = SUBSCRIPTION_PLAN_DAYS[variantLabel];
+  if (!days || !orderDeliveryDate) return { start: null, end: null };
+
+  const start = new Date(orderDeliveryDate);
+  const end = new Date(start);
+  end.setDate(end.getDate() + days - 1);
+
+  return { start: toISODate(start), end: toISODate(end) };
+};
 
 // Creates an order plus its item rows AND decrements product stock — all
 // inside a single transaction, so if stock runs out partway through, the
@@ -57,20 +95,29 @@ const createOrder = async (userId, orderData) => {
     );
     const orderId = result.insertId;
 
-    const itemValues = items.map((item) => [
-      orderId,
-      item.productId,
-      item.variantId,
-      item.name,
-      item.variant,
-      item.image,
-      item.price,
-      item.qty,
-    ]);
+    // Every item gets its subscription window computed server-side from
+    // the item's own variant label + the order's delivery date. Regular
+    // (weight/pc/ml) items simply get null/null here.
+    const itemValues = items.map((item) => {
+      const { start, end } = getSubscriptionWindow(item.variant, deliveryDate);
+      return [
+        orderId,
+        item.productId,
+        item.variantId,
+        item.name,
+        item.variant,
+        item.image,
+        item.price,
+        item.qty,
+        start,
+        end,
+      ];
+    });
 
     await connection.query(
       `INSERT INTO order_items
-        (order_id, product_id, variant_id, name, variant_label, image, price, qty)
+        (order_id, product_id, variant_id, name, variant_label, image, price, qty,
+         subscription_start_date, subscription_end_date)
        VALUES ?`,
       [itemValues]
     );
@@ -85,14 +132,30 @@ const createOrder = async (userId, orderData) => {
   }
 };
 
+// Shared SELECT column list for order_items across every read function,
+// so subscription fields are always returned consistently.
+const ORDER_ITEMS_SELECT = `
+  id, product_id, variant_id, name, variant_label AS variant, image, price, qty,
+  subscription_start_date AS subscription_start,
+  subscription_end_date AS subscription_end
+`;
+
+const mapItem = (i) => ({
+  ...i,
+  price: Number(i.price),
+  qty: Number(i.qty),
+  // Convenience flag so the frontend doesn't have to re-derive this from
+  // the variant label — the backend already knows definitively.
+  is_subscription: Boolean(i.subscription_start),
+});
+
 const getOrderById = async (orderId, userId) => {
   return withRetry(async () => {
     const [orders] = await pool.query(`SELECT * FROM orders WHERE id = ? AND user_id = ?`, [orderId, userId]);
     if (orders.length === 0) return null;
 
     const [items] = await pool.query(
-      `SELECT id, product_id, variant_id, name, variant_label AS variant, image, price, qty
-       FROM order_items WHERE order_id = ?`,
+      `SELECT ${ORDER_ITEMS_SELECT} FROM order_items WHERE order_id = ?`,
       [orderId]
     );
 
@@ -101,7 +164,7 @@ const getOrderById = async (orderId, userId) => {
       subtotal: Number(orders[0].subtotal),
       delivery_fee: Number(orders[0].delivery_fee),
       total: Number(orders[0].total),
-      items: items.map((i) => ({ ...i, price: Number(i.price), qty: Number(i.qty) })),
+      items: items.map(mapItem),
     };
   });
 };
@@ -113,8 +176,7 @@ const getOrdersByUser = async (userId) => {
 
     const orderIds = orders.map((o) => o.id);
     const [items] = await pool.query(
-      `SELECT id, order_id, product_id, variant_id, name, variant_label AS variant, image, price, qty
-       FROM order_items WHERE order_id IN (?)`,
+      `SELECT order_id, ${ORDER_ITEMS_SELECT} FROM order_items WHERE order_id IN (?)`,
       [orderIds]
     );
 
@@ -123,7 +185,7 @@ const getOrdersByUser = async (userId) => {
       subtotal: Number(order.subtotal),
       delivery_fee: Number(order.delivery_fee),
       total: Number(order.total),
-      items: items.filter((i) => i.order_id === order.id).map((i) => ({ ...i, price: Number(i.price), qty: Number(i.qty) })),
+      items: items.filter((i) => i.order_id === order.id).map(mapItem),
     }));
   });
 };
@@ -149,8 +211,7 @@ const getAllOrders = async (filters = {}) => {
 
     const orderIds = orders.map((o) => o.id);
     const [items] = await pool.query(
-      `SELECT id, order_id, product_id, variant_id, name, variant_label AS variant, image, price, qty
-       FROM order_items WHERE order_id IN (?)`,
+      `SELECT order_id, ${ORDER_ITEMS_SELECT} FROM order_items WHERE order_id IN (?)`,
       [orderIds]
     );
 
@@ -159,7 +220,7 @@ const getAllOrders = async (filters = {}) => {
       subtotal: Number(order.subtotal),
       delivery_fee: Number(order.delivery_fee),
       total: Number(order.total),
-      items: items.filter((i) => i.order_id === order.id).map((i) => ({ ...i, price: Number(i.price), qty: Number(i.qty) })),
+      items: items.filter((i) => i.order_id === order.id).map(mapItem),
     }));
   });
 };
@@ -170,8 +231,7 @@ const getAnyOrderById = async (orderId) => {
     if (orders.length === 0) return null;
 
     const [items] = await pool.query(
-      `SELECT id, product_id, variant_id, name, variant_label AS variant, image, price, qty
-       FROM order_items WHERE order_id = ?`,
+      `SELECT ${ORDER_ITEMS_SELECT} FROM order_items WHERE order_id = ?`,
       [orderId]
     );
 
@@ -180,7 +240,7 @@ const getAnyOrderById = async (orderId) => {
       subtotal: Number(orders[0].subtotal),
       delivery_fee: Number(orders[0].delivery_fee),
       total: Number(orders[0].total),
-      items: items.map((i) => ({ ...i, price: Number(i.price), qty: Number(i.qty) })),
+      items: items.map(mapItem),
     };
   });
 };

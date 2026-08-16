@@ -17,7 +17,8 @@ const withRetry = async (fn, retries = 1) => {
   }
 };
 
-// ... findAll, findSpecialOffers, findById, create, update stay exactly as they are ...
+const VALID_UNITS = ["weight", "pc", "ml", "daily", "weekly", "monthly"];
+const normalizeUnit = (unit) => (VALID_UNITS.includes(unit) ? unit : "weight");
 
 const findAll = async (search = "") => {
   return withRetry(async () => {
@@ -118,7 +119,7 @@ const create = async ({ name, category, image, stock, status, variants, is_speci
     const productId = result.insertId;
 
     if (variants && variants.length > 0) {
-      const values = variants.map((v) => [productId, v.unit === "pc" ? "pc" : "weight", v.label, v.price]);
+      const values = variants.map((v) => [productId, normalizeUnit(v.unit), v.label, v.price]);
       await connection.query(
         `INSERT INTO product_variants (product_id, unit, label, price) VALUES ?`,
         [values]
@@ -150,7 +151,7 @@ const update = async (id, { name, category, image, stock, status, variants, is_s
     await connection.query(`DELETE FROM product_variants WHERE product_id = ?`, [id]);
 
     if (variants && variants.length > 0) {
-      const values = variants.map((v) => [id, v.unit === "pc" ? "pc" : "weight", v.label, v.price]);
+      const values = variants.map((v) => [id, normalizeUnit(v.unit), v.label, v.price]);
       await connection.query(
         `INSERT INTO product_variants (product_id, unit, label, price) VALUES ?`,
         [values]
@@ -174,7 +175,7 @@ const remove = async (id) => {
   });
 };
 
-// ---- Stock adjustment (new) ----
+// ---- Stock adjustment ----
 
 // Decrements stock for a single product within an EXISTING transaction
 // (must be called with a `connection`, not the pool, so it's part of the

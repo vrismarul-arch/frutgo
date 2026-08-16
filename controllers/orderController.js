@@ -35,6 +35,12 @@ const validateOrderBody = (body) => {
 // pulled fresh from the server-side cart. Stock is decremented atomically
 // inside orderModel.createOrder — if any item is out of stock, the whole
 // order is rejected and nothing is written.
+//
+// Subscription (Daily/Weekly/Monthly) items in the cart carry their
+// variant label (e.g. "1 Month") straight through to orderModel.createOrder,
+// which is where the subscription_start_date / subscription_end_date for
+// each item actually gets computed — always server-side, from this same
+// deliveryDate, never trusting anything the client might send for it.
 const placeOrder = async (req, res) => {
   const errors = validateOrderBody(req.body);
   if (Object.keys(errors).length > 0) {
