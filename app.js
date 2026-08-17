@@ -7,52 +7,171 @@ const productRoutes = require("./routes/productRoutes");
 const cartRoutes = require("./routes/cartRoutes");
 const orderRoutes = require("./routes/orderRoutes");
 const adminOrderRoutes = require("./routes/adminOrderRoutes");
-const { notFound, errorHandler } = require("./middleware/errorHandler");
+
+const {
+  notFound,
+  errorHandler,
+} = require("./middleware/errorHandler");
 
 const app = express();
 
-// ===========================
+// =====================================================
 // CORS
-// ===========================
+// =====================================================
+
 const allowedOrigins = [
-  "http://localhost:5173", // Vite dev server
-  "https://frutgodelivery.netlify.app", // Vite dev server
-  // 👈 add your production frontend URL here
+  // Vite development
+  "http://localhost:5173",
+
+  // Production website
+  "https://frutgodelivery.netlify.app",
 ];
 
 const corsOptions = {
   origin: (origin, callback) => {
-    // allow requests with no origin (curl, Postman, server-to-server)
-    if (!origin) return callback(null, true);
+    // Allow requests without Origin
+    // Example: Postman, curl, server-to-server
+    if (!origin) {
+      return callback(null, true);
+    }
 
+    // Allow exact production/development origins
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
 
-    return callback(new Error(`Origin ${origin} not allowed by CORS`));
+    // Allow Flutter Web localhost
+    // Example:
+    // http://localhost:55731
+    // http://localhost:52143
+    // http://localhost:8080
+    if (/^http:\/\/localhost:\d+$/.test(origin)) {
+      return callback(null, true);
+    }
+
+    // Allow Flutter Web using 127.0.0.1
+    // Example:
+    // http://127.0.0.1:55731
+    if (/^http:\/\/127\.0\.0\.1:\d+$/.test(origin)) {
+      return callback(null, true);
+    }
+
+    console.log(
+      `CORS blocked origin: ${origin}`
+    );
+
+    return callback(
+      new Error(
+        `Origin ${origin} not allowed by CORS`
+      )
+    );
   },
+
   credentials: true,
+
+  methods: [
+    "GET",
+    "POST",
+    "PUT",
+    "PATCH",
+    "DELETE",
+    "OPTIONS",
+  ],
+
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "Accept",
+  ],
 };
 
 app.use(cors(corsOptions));
+
+// =====================================================
+// BODY PARSER
+// =====================================================
+
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
-app.get("/api/health", (req, res) => res.json({ status: "ok" }));
+app.use(
+  express.urlencoded({
+    extended: true,
+  })
+);
 
-// Admin auth + admin-only product management
-app.use("/api/admin", authRoutes);
-app.use("/api/admin/products", productRoutes);
-app.use("/api/admin/orders", adminOrderRoutes);
+// =====================================================
+// HEALTH CHECK
+// =====================================================
 
-// Customer-facing auth (signup, login, Google login)
-app.use("/api/users/auth", userAuthRoutes);
+app.get(
+  "/api/health",
+  (req, res) => {
+    res.status(200).json({
+      status: "ok",
+      message: "Frutgo API is running",
+    });
+  }
+);
 
-// Customer cart and orders
-app.use("/api/cart", cartRoutes);
-app.use("/api/orders", orderRoutes);
+// =====================================================
+// ADMIN ROUTES
+// =====================================================
+
+// Admin authentication
+app.use(
+  "/api/admin",
+  authRoutes
+);
+
+// Admin product management
+app.use(
+  "/api/admin/products",
+  productRoutes
+);
+
+// Admin order management
+app.use(
+  "/api/admin/orders",
+  adminOrderRoutes
+);
+
+// =====================================================
+// CUSTOMER AUTH
+// =====================================================
+
+app.use(
+  "/api/users/auth",
+  userAuthRoutes
+);
+
+// =====================================================
+// CUSTOMER CART
+// =====================================================
+
+app.use(
+  "/api/cart",
+  cartRoutes
+);
+
+// =====================================================
+// CUSTOMER ORDERS
+// =====================================================
+
+app.use(
+  "/api/orders",
+  orderRoutes
+);
+
+// =====================================================
+// 404
+// =====================================================
 
 app.use(notFound);
+
+// =====================================================
+// ERROR HANDLER
+// =====================================================
+
 app.use(errorHandler);
 
 module.exports = app;
