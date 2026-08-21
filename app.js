@@ -7,7 +7,8 @@ const productRoutes = require("./routes/productRoutes");
 const cartRoutes = require("./routes/cartRoutes");
 const orderRoutes = require("./routes/orderRoutes");
 const adminOrderRoutes = require("./routes/adminOrderRoutes");
-
+const addressRoutes =
+  require("./routes/addressRoutes");
 const {
   notFound,
   errorHandler,
@@ -156,7 +157,10 @@ app.use(
 // =====================================================
 // CUSTOMER ORDERS
 // =====================================================
-
+app.use(
+  "/api/addresses",
+  addressRoutes
+);
 app.use(
   "/api/orders",
   orderRoutes

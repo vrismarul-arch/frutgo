@@ -1,71 +1,216 @@
+// ============================================================
+// models/orderModel.js
+// COMPLETE ORDER MODEL
+// UTC TIME SAFE
+// ============================================================
+
 const pool = require("../config/db");
 const productModel = require("./productModel");
 
-/* -------------------------------------------------------------------------
- * REQUIRED MIGRATION before this file works:
- *
- *   ALTER TABLE order_items
- *     ADD COLUMN subscription_start_date DATE NULL AFTER qty,
- *     ADD COLUMN subscription_end_date   DATE NULL AFTER subscription_start_date;
- *
- * These two columns are NULL for regular (weight/pc/ml) items and populated
- * only for Daily/Weekly/Monthly subscription items, so the order's item
- * rows carry their own delivery window instead of that info living only in
- * the frontend (which never reaches the backend/admin otherwise).
- * ---------------------------------------------------------------------- */
+// ============================================================
+// CONFIG
+// ============================================================
 
-const withRetry = async (fn, retries = 1) => {
-  try {
-    return await fn();
-  } catch (err) {
-    const isDroppedConnection =
-      err.code === "ECONNRESET" || err.code === "PROTOCOL_CONNECTION_LOST" || err.fatal === true;
-    if (retries > 0 && isDroppedConnection) {
-      console.warn(`DB connection dropped (${err.code}), retrying...`);
-      return withRetry(fn, retries - 1);
-    }
-    throw err;
-  }
-};
+const DELIVERY_TIME_MINUTES = 45;
 
-const ALLOWED_STATUSES = ["pending", "confirmed", "out_for_delivery", "delivered", "cancelled"];
+const DELIVERY_TIME_MS =
+  DELIVERY_TIME_MINUTES *
+  60 *
+  1000;
 
-// Subscription plan labels (must match the admin's UNIT_CONFIG fixedLabel
-// values exactly: "1 Day", "1 Week", "1 Month") and how many days each runs.
+const ALLOWED_STATUSES = [
+  "pending",
+  "confirmed",
+  "out_for_delivery",
+  "delivered",
+  "cancelled",
+];
+
+// ============================================================
+// SUBSCRIPTION PLANS
+// ============================================================
+
 const SUBSCRIPTION_PLAN_DAYS = {
   "1 Day": 1,
   "1 Week": 7,
   "1 Month": 30,
 };
 
-const toISODate = (d) => d.toISOString().split("T")[0];
+// ============================================================
+// RETRY
+// ============================================================
 
-// Computes { start, end } ISO date strings for a subscription item, based
-// on the ORDER's delivery date (the single source of truth — never trusts
-// any date the client might have pre-computed and sent up). Returns
-// { start: null, end: null } for non-subscription variants.
-const getSubscriptionWindow = (variantLabel, orderDeliveryDate) => {
-  const days = SUBSCRIPTION_PLAN_DAYS[variantLabel];
-  if (!days || !orderDeliveryDate) return { start: null, end: null };
+const withRetry = async (
+  fn,
+  retries = 1
+) => {
+  try {
+    return await fn();
+  } catch (err) {
+    const connectionDropped =
+      err.code === "ECONNRESET" ||
+      err.code ===
+        "PROTOCOL_CONNECTION_LOST" ||
+      err.fatal === true;
 
-  const start = new Date(orderDeliveryDate);
-  const end = new Date(start);
-  end.setDate(end.getDate() + days - 1);
+    if (
+      retries > 0 &&
+      connectionDropped
+    ) {
+      console.warn(
+        `Database connection dropped (${err.code}), retrying...`
+      );
 
-  return { start: toISODate(start), end: toISODate(end) };
+      return withRetry(
+        fn,
+        retries - 1
+      );
+    }
+
+    throw err;
+  }
 };
 
-// Creates an order plus its item rows AND decrements product stock — all
-// inside a single transaction, so if stock runs out partway through, the
-// whole order (and any stock already decremented in this same call) rolls
-// back together instead of leaving a partially-fulfilled order.
-const createOrder = async (userId, orderData) => {
+// ============================================================
+// DATABASE UTC DATETIME -> ISO UTC
+// ============================================================
+
+const dbUTCToISO = (
+  value
+) => {
+  if (!value) {
+    return null;
+  }
+
+  // mysql2 can return Date
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  const valueString =
+    String(value).trim();
+
+  if (!valueString) {
+    return null;
+  }
+
+  // Already ISO UTC
+  if (
+    valueString.endsWith("Z")
+  ) {
+    const date =
+      new Date(valueString);
+
+    if (
+      Number.isNaN(
+        date.getTime()
+      )
+    ) {
+      return null;
+    }
+
+    return date.toISOString();
+  }
+
+  // MySQL:
+  // 2026-08-21 13:54:27.321
+  //
+  // Convert to:
+  // 2026-08-21T13:54:27.321Z
+
+  const isoString =
+    valueString.replace(
+      " ",
+      "T"
+    ) + "Z";
+
+  const date =
+    new Date(isoString);
+
+  if (
+    Number.isNaN(
+      date.getTime()
+    )
+  ) {
+    return null;
+  }
+
+  return date.toISOString();
+};
+
+// ============================================================
+// DATE ONLY
+// ============================================================
+
+const toISODate = (
+  date
+) =>
+  date
+    .toISOString()
+    .split("T")[0];
+
+// ============================================================
+// SUBSCRIPTION WINDOW
+// ============================================================
+
+const getSubscriptionWindow = (
+  variantLabel,
+  orderDeliveryDate
+) => {
+  const days =
+    SUBSCRIPTION_PLAN_DAYS[
+      variantLabel
+    ];
+
+  if (
+    !days ||
+    !orderDeliveryDate
+  ) {
+    return {
+      start: null,
+      end: null,
+    };
+  }
+
+  const start =
+    new Date(
+      `${orderDeliveryDate}T00:00:00.000Z`
+    );
+
+  const end =
+    new Date(start);
+
+  end.setUTCDate(
+    end.getUTCDate() +
+      days -
+      1
+  );
+
+  return {
+    start:
+      toISODate(start),
+
+    end:
+      toISODate(end),
+  };
+};
+
+// ============================================================
+// CREATE ORDER
+// ============================================================
+
+const createOrder = async (
+  userId,
+  orderData
+) => {
   const {
     name,
     mobile,
     email,
     address,
+    addressLine2,
     city,
+    state,
     pincode,
     deliveryDate,
     paymentMethod,
@@ -75,224 +220,837 @@ const createOrder = async (userId, orderData) => {
     items,
   } = orderData;
 
-  const connection = await pool.getConnection();
+  const connection =
+    await pool.getConnection();
+
   try {
     await connection.beginTransaction();
 
-    // Decrement stock for every item FIRST — if any product doesn't have
-    // enough stock, this throws INSUFFICIENT_STOCK and the whole
-    // transaction rolls back before any order row is ever written.
+    // ========================================================
+    // STOCK
+    // ========================================================
+
     for (const item of items) {
-      await productModel.decrementStockInTransaction(connection, item.productId, item.qty);
+      await productModel.decrementStockInTransaction(
+        connection,
+        item.productId,
+        item.qty
+      );
     }
 
-    const [result] = await connection.query(
-      `INSERT INTO orders
-        (user_id, name, mobile, email, address, city, pincode,
-         delivery_date, payment_method, subtotal, delivery_fee, total)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [userId, name, mobile, email, address, city, pincode, deliveryDate, paymentMethod, subtotal, deliveryFee, total]
-    );
-    const orderId = result.insertId;
+    // ========================================================
+    // CREATE ORDER
+    // ========================================================
+    //
+    // DO NOT USE:
+    //
+    // new Date() from frontend
+    //
+    // DO NOT USE:
+    //
+    // NOW()
+    //
+    // Use:
+    //
+    // UTC_TIMESTAMP(3)
+    //
+    // This is the authoritative booking time.
+    // ========================================================
 
-    // Every item gets its subscription window computed server-side from
-    // the item's own variant label + the order's delivery date. Regular
-    // (weight/pc/ml) items simply get null/null here.
-    const itemValues = items.map((item) => {
-      const { start, end } = getSubscriptionWindow(item.variant, deliveryDate);
-      return [
-        orderId,
-        item.productId,
-        item.variantId,
-        item.name,
-        item.variant,
-        item.image,
-        item.price,
-        item.qty,
-        start,
-        end,
-      ];
-    });
+    const [result] =
+      await connection.query(
+        `
+        INSERT INTO orders
+        (
+          user_id,
+          name,
+          mobile,
+          email,
+          address,
+          address_line2,
+          city,
+          state,
+          pincode,
+          delivery_date,
+          payment_method,
+          subtotal,
+          delivery_fee,
+          total,
+          booked_at
+        )
+        VALUES
+        (
+          ?,
+          ?,
+          ?,
+          ?,
+          ?,
+          ?,
+          ?,
+          ?,
+          ?,
+          ?,
+          ?,
+          ?,
+          ?,
+          ?,
+          UTC_TIMESTAMP(3)
+        )
+        `,
+        [
+          userId,
 
-    await connection.query(
-      `INSERT INTO order_items
-        (order_id, product_id, variant_id, name, variant_label, image, price, qty,
-         subscription_start_date, subscription_end_date)
-       VALUES ?`,
-      [itemValues]
-    );
+          name,
+
+          mobile,
+
+          email,
+
+          address,
+
+          addressLine2 || "",
+
+          city,
+
+          state || "",
+
+          pincode,
+
+          deliveryDate,
+
+          paymentMethod,
+
+          subtotal,
+
+          deliveryFee,
+
+          total,
+        ]
+      );
+
+    const orderId =
+      result.insertId;
+
+    // ========================================================
+    // ORDER ITEMS
+    // ========================================================
+
+    const itemValues =
+      items.map((item) => {
+        const {
+          start,
+          end,
+        } =
+          getSubscriptionWindow(
+            item.variant,
+            deliveryDate
+          );
+
+        return [
+          orderId,
+
+          item.productId,
+
+          item.variantId,
+
+          item.name,
+
+          item.variant,
+
+          item.image,
+
+          item.price,
+
+          item.qty,
+
+          start,
+
+          end,
+        ];
+      });
+
+    if (
+      itemValues.length > 0
+    ) {
+      await connection.query(
+        `
+        INSERT INTO order_items
+        (
+          order_id,
+          product_id,
+          variant_id,
+          name,
+          variant_label,
+          image,
+          price,
+          qty,
+          subscription_start_date,
+          subscription_end_date
+        )
+        VALUES ?
+        `,
+        [itemValues]
+      );
+    }
+
+    // ========================================================
+    // COMMIT
+    // ========================================================
 
     await connection.commit();
-    return withRetry(() => getOrderById(orderId, userId));
-  } catch (err) {
-    await connection.rollback();
-    throw err;
+
+    // ========================================================
+    // RETURN FRESH ORDER
+    // ========================================================
+
+    return withRetry(
+      () =>
+        getOrderById(
+          orderId,
+          userId
+        )
+    );
+  } catch (error) {
+    try {
+      await connection.rollback();
+    } catch {}
+
+    throw error;
   } finally {
     connection.release();
   }
 };
 
-// Shared SELECT column list for order_items across every read function,
-// so subscription fields are always returned consistently.
+// ============================================================
+// ORDER ITEM SELECT
+// ============================================================
+
 const ORDER_ITEMS_SELECT = `
-  id, product_id, variant_id, name, variant_label AS variant, image, price, qty,
+  id,
+  product_id,
+  variant_id,
+  name,
+  variant_label AS variant,
+  image,
+  price,
+  qty,
   subscription_start_date AS subscription_start,
   subscription_end_date AS subscription_end
 `;
 
-const mapItem = (i) => ({
-  ...i,
-  price: Number(i.price),
-  qty: Number(i.qty),
-  // Convenience flag so the frontend doesn't have to re-derive this from
-  // the variant label — the backend already knows definitively.
-  is_subscription: Boolean(i.subscription_start),
+// ============================================================
+// MAP ITEM
+// ============================================================
+
+const mapItem = (
+  item
+) => ({
+  ...item,
+
+  price:
+    Number(item.price) || 0,
+
+  qty:
+    Number(item.qty) || 0,
+
+  is_subscription:
+    Boolean(
+      item.subscription_start
+    ),
 });
 
-const getOrderById = async (orderId, userId) => {
-  return withRetry(async () => {
-    const [orders] = await pool.query(`SELECT * FROM orders WHERE id = ? AND user_id = ?`, [orderId, userId]);
-    if (orders.length === 0) return null;
+// ============================================================
+// MAP ORDER
+// ============================================================
 
-    const [items] = await pool.query(
-      `SELECT ${ORDER_ITEMS_SELECT} FROM order_items WHERE order_id = ?`,
-      [orderId]
+const mapOrder = (
+  order,
+  items
+) => {
+  // ========================================================
+  // BOOKING TIME
+  // ========================================================
+
+  const rawBookedAt =
+    order.booked_at ||
+    order.created_at;
+
+  const bookedAt =
+    dbUTCToISO(
+      rawBookedAt
     );
 
-    return {
-      ...orders[0],
-      subtotal: Number(orders[0].subtotal),
-      delivery_fee: Number(orders[0].delivery_fee),
-      total: Number(orders[0].total),
-      items: items.map(mapItem),
-    };
-  });
-};
+  // ========================================================
+  // EXPECTED DELIVERY
+  // ========================================================
 
-const getOrdersByUser = async (userId) => {
-  return withRetry(async () => {
-    const [orders] = await pool.query(`SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC`, [userId]);
-    if (orders.length === 0) return [];
+  let expectedDeliveryAt =
+    null;
 
-    const orderIds = orders.map((o) => o.id);
-    const [items] = await pool.query(
-      `SELECT order_id, ${ORDER_ITEMS_SELECT} FROM order_items WHERE order_id IN (?)`,
-      [orderIds]
-    );
+  if (bookedAt) {
+    const bookedMilliseconds =
+      new Date(
+        bookedAt
+      ).getTime();
 
-    return orders.map((order) => ({
-      ...order,
-      subtotal: Number(order.subtotal),
-      delivery_fee: Number(order.delivery_fee),
-      total: Number(order.total),
-      items: items.filter((i) => i.order_id === order.id).map(mapItem),
-    }));
-  });
-};
-
-const getAllOrders = async (filters = {}) => {
-  return withRetry(async () => {
-    const { status = "", search = "" } = filters;
-    let sql = `SELECT * FROM orders WHERE 1=1`;
-    const params = [];
-
-    if (status && ALLOWED_STATUSES.includes(status)) {
-      sql += ` AND status = ?`;
-      params.push(status);
+    if (
+      !Number.isNaN(
+        bookedMilliseconds
+      )
+    ) {
+      expectedDeliveryAt =
+        new Date(
+          bookedMilliseconds +
+            DELIVERY_TIME_MS
+        ).toISOString();
     }
-    if (search) {
-      sql += ` AND (name LIKE ? OR email LIKE ? OR mobile LIKE ?)`;
-      params.push(`%${search}%`, `%${search}%`, `%${search}%`);
-    }
-    sql += ` ORDER BY created_at DESC`;
-
-    const [orders] = await pool.query(sql, params);
-    if (orders.length === 0) return [];
-
-    const orderIds = orders.map((o) => o.id);
-    const [items] = await pool.query(
-      `SELECT order_id, ${ORDER_ITEMS_SELECT} FROM order_items WHERE order_id IN (?)`,
-      [orderIds]
-    );
-
-    return orders.map((order) => ({
-      ...order,
-      subtotal: Number(order.subtotal),
-      delivery_fee: Number(order.delivery_fee),
-      total: Number(order.total),
-      items: items.filter((i) => i.order_id === order.id).map(mapItem),
-    }));
-  });
-};
-
-const getAnyOrderById = async (orderId) => {
-  return withRetry(async () => {
-    const [orders] = await pool.query(`SELECT * FROM orders WHERE id = ?`, [orderId]);
-    if (orders.length === 0) return null;
-
-    const [items] = await pool.query(
-      `SELECT ${ORDER_ITEMS_SELECT} FROM order_items WHERE order_id = ?`,
-      [orderId]
-    );
-
-    return {
-      ...orders[0],
-      subtotal: Number(orders[0].subtotal),
-      delivery_fee: Number(orders[0].delivery_fee),
-      total: Number(orders[0].total),
-      items: items.map(mapItem),
-    };
-  });
-};
-
-// Updates order status. If moving INTO "cancelled" from any other status,
-// restores stock for every item in the order — all inside one transaction
-// so a failure partway through doesn't leave stock half-restored.
-const updateOrderStatus = async (orderId, status) => {
-  if (!ALLOWED_STATUSES.includes(status)) {
-    throw new Error("Invalid order status");
   }
 
-  const connection = await pool.getConnection();
-  try {
-    await connection.beginTransaction();
+  // ========================================================
+  // RETURN
+  // ========================================================
 
-    const [existingRows] = await connection.query(`SELECT status FROM orders WHERE id = ?`, [orderId]);
-    if (existingRows.length === 0) {
-      await connection.rollback();
+  return {
+    ...order,
+
+    id: order.id,
+
+    user_id:
+      order.user_id,
+
+    name:
+      order.name || "",
+
+    mobile:
+      order.mobile || "",
+
+    email:
+      order.email || "",
+
+    address:
+      order.address || "",
+
+    address_line2:
+      order.address_line2 ||
+      "",
+
+    city:
+      order.city || "",
+
+    state:
+      order.state || "",
+
+    pincode:
+      order.pincode || "",
+
+    payment_method:
+      order.payment_method ||
+      "cod",
+
+    subtotal:
+      Number(
+        order.subtotal
+      ) || 0,
+
+    delivery_fee:
+      Number(
+        order.delivery_fee
+      ) || 0,
+
+    total:
+      Number(
+        order.total
+      ) || 0,
+
+    status:
+      order.status ||
+      "pending",
+
+    created_at:
+      dbUTCToISO(
+        order.created_at
+      ),
+
+    updated_at:
+      dbUTCToISO(
+        order.updated_at
+      ),
+
+    delivery_date:
+      order.delivery_date ||
+      null,
+
+    // ======================================================
+    // AUTHORITATIVE BOOKING TIME
+    // ======================================================
+
+    booked_at:
+      bookedAt,
+
+    delivery_time_minutes:
+      DELIVERY_TIME_MINUTES,
+
+    expected_delivery_at:
+      expectedDeliveryAt,
+
+    // ======================================================
+    // REVIEW
+    // ======================================================
+
+    review_rating:
+      order.review_rating
+        ? Number(
+            order.review_rating
+          )
+        : null,
+
+    review_text:
+      order.review_text ||
+      null,
+
+    reviewed_at:
+      dbUTCToISO(
+        order.reviewed_at
+      ),
+
+    // ======================================================
+    // ITEMS
+    // ======================================================
+
+    items:
+      items.map(mapItem),
+  };
+};
+
+// ============================================================
+// GET ORDER BY ID
+// ============================================================
+
+const getOrderById = async (
+  orderId,
+  userId
+) => {
+  return withRetry(
+    async () => {
+      const [orders] =
+        await pool.query(
+          `
+          SELECT *
+          FROM orders
+          WHERE id = ?
+          AND user_id = ?
+          `,
+          [
+            orderId,
+            userId,
+          ]
+        );
+
+      if (
+        orders.length === 0
+      ) {
+        return null;
+      }
+
+      const [items] =
+        await pool.query(
+          `
+          SELECT
+            ${ORDER_ITEMS_SELECT}
+          FROM order_items
+          WHERE order_id = ?
+          `,
+          [orderId]
+        );
+
+      return mapOrder(
+        orders[0],
+        items
+      );
+    }
+  );
+};
+
+// ============================================================
+// GET USER ORDERS
+// ============================================================
+
+const getOrdersByUser =
+  async (userId) => {
+    return withRetry(
+      async () => {
+        const [orders] =
+          await pool.query(
+            `
+            SELECT *
+            FROM orders
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+            `,
+            [userId]
+          );
+
+        if (
+          orders.length === 0
+        ) {
+          return [];
+        }
+
+        const orderIds =
+          orders.map(
+            (order) =>
+              order.id
+          );
+
+        const [items] =
+          await pool.query(
+            `
+            SELECT
+              order_id,
+              ${ORDER_ITEMS_SELECT}
+            FROM order_items
+            WHERE order_id IN (?)
+            `,
+            [orderIds]
+          );
+
+        return orders.map(
+          (order) => {
+            const orderItems =
+              items.filter(
+                (item) =>
+                  item.order_id ===
+                  order.id
+              );
+
+            return mapOrder(
+              order,
+              orderItems
+            );
+          }
+        );
+      }
+    );
+  };
+
+// ============================================================
+// GET ALL ORDERS - ADMIN
+// ============================================================
+
+const getAllOrders =
+  async (filters = {}) => {
+    return withRetry(
+      async () => {
+        const {
+          status = "",
+          search = "",
+        } = filters;
+
+        let sql = `
+          SELECT *
+          FROM orders
+          WHERE 1 = 1
+        `;
+
+        const params = [];
+
+        if (
+          status &&
+          ALLOWED_STATUSES.includes(
+            status
+          )
+        ) {
+          sql += `
+            AND status = ?
+          `;
+
+          params.push(status);
+        }
+
+        if (search) {
+          sql += `
+            AND (
+              name LIKE ?
+              OR email LIKE ?
+              OR mobile LIKE ?
+            )
+          `;
+
+          params.push(
+            `%${search}%`,
+            `%${search}%`,
+            `%${search}%`
+          );
+        }
+
+        sql += `
+          ORDER BY created_at DESC
+        `;
+
+        const [orders] =
+          await pool.query(
+            sql,
+            params
+          );
+
+        if (
+          orders.length === 0
+        ) {
+          return [];
+        }
+
+        const orderIds =
+          orders.map(
+            (order) =>
+              order.id
+          );
+
+        const [items] =
+          await pool.query(
+            `
+            SELECT
+              order_id,
+              ${ORDER_ITEMS_SELECT}
+            FROM order_items
+            WHERE order_id IN (?)
+            `,
+            [orderIds]
+          );
+
+        return orders.map(
+          (order) => {
+            const orderItems =
+              items.filter(
+                (item) =>
+                  item.order_id ===
+                  order.id
+              );
+
+            return mapOrder(
+              order,
+              orderItems
+            );
+          }
+        );
+      }
+    );
+  };
+
+// ============================================================
+// GET ANY ORDER BY ID - ADMIN
+// ============================================================
+
+const getAnyOrderById =
+  async (orderId) => {
+    return withRetry(
+      async () => {
+        const [orders] =
+          await pool.query(
+            `
+            SELECT *
+            FROM orders
+            WHERE id = ?
+            `,
+            [orderId]
+          );
+
+        if (
+          orders.length === 0
+        ) {
+          return null;
+        }
+
+        const [items] =
+          await pool.query(
+            `
+            SELECT
+              ${ORDER_ITEMS_SELECT}
+            FROM order_items
+            WHERE order_id = ?
+            `,
+            [orderId]
+          );
+
+        return mapOrder(
+          orders[0],
+          items
+        );
+      }
+    );
+  };
+
+// ============================================================
+// UPDATE ORDER STATUS
+// ============================================================
+
+const updateOrderStatus =
+  async (
+    orderId,
+    status
+  ) => {
+    if (
+      !ALLOWED_STATUSES.includes(
+        status
+      )
+    ) {
+      throw new Error(
+        "Invalid order status"
+      );
+    }
+
+    const connection =
+      await pool.getConnection();
+
+    try {
+      await connection.beginTransaction();
+
+      const [
+        existingRows,
+      ] =
+        await connection.query(
+          `
+          SELECT status
+          FROM orders
+          WHERE id = ?
+          `,
+          [orderId]
+        );
+
+      if (
+        existingRows.length ===
+        0
+      ) {
+        await connection.rollback();
+
+        return null;
+      }
+
+      const previousStatus =
+        existingRows[0].status;
+
+      await connection.query(
+        `
+        UPDATE orders
+        SET status = ?
+        WHERE id = ?
+        `,
+        [
+          status,
+          orderId,
+        ]
+      );
+
+      // ======================================================
+      // RESTORE STOCK
+      // ======================================================
+
+      if (
+        status ===
+          "cancelled" &&
+        previousStatus !==
+          "cancelled"
+      ) {
+        const [items] =
+          await connection.query(
+            `
+            SELECT
+              product_id,
+              qty
+            FROM order_items
+            WHERE order_id = ?
+            `,
+            [orderId]
+          );
+
+        for (const item of items) {
+          await productModel.incrementStockInTransaction(
+            connection,
+            item.product_id,
+            item.qty
+          );
+        }
+      }
+
+      await connection.commit();
+
+      return withRetry(
+        () =>
+          getAnyOrderById(
+            orderId
+          )
+      );
+    } catch (error) {
+      try {
+        await connection.rollback();
+      } catch {}
+
+      throw error;
+    } finally {
+      connection.release();
+    }
+  };
+
+// ============================================================
+// REVIEW
+// ============================================================
+
+const addOrderReview =
+  async (
+    orderId,
+    userId,
+    rating,
+    reviewText
+  ) => {
+    const [result] =
+      await pool.query(
+        `
+        UPDATE orders
+        SET
+          review_rating = ?,
+          review_text = ?,
+          reviewed_at = UTC_TIMESTAMP(3)
+        WHERE id = ?
+        AND user_id = ?
+        AND status = 'delivered'
+        `,
+        [
+          rating,
+          reviewText || null,
+          orderId,
+          userId,
+        ]
+      );
+
+    if (
+      result.affectedRows === 0
+    ) {
       return null;
     }
-    const previousStatus = existingRows[0].status;
 
-    await connection.query(`UPDATE orders SET status = ? WHERE id = ?`, [status, orderId]);
+    return getOrderById(
+      orderId,
+      userId
+    );
+  };
 
-    // Only restore stock on the transition INTO cancelled — guards against
-    // double-restoring stock if an order is somehow set to "cancelled" twice.
-    if (status === "cancelled" && previousStatus !== "cancelled") {
-      const [items] = await connection.query(
-        `SELECT product_id, qty FROM order_items WHERE order_id = ?`,
-        [orderId]
-      );
-      for (const item of items) {
-        await productModel.incrementStockInTransaction(connection, item.product_id, item.qty);
-      }
-    }
-
-    await connection.commit();
-    return withRetry(() => getAnyOrderById(orderId));
-  } catch (err) {
-    await connection.rollback();
-    throw err;
-  } finally {
-    connection.release();
-  }
-};
+// ============================================================
+// EXPORT
+// ============================================================
 
 module.exports = {
+  DELIVERY_TIME_MINUTES,
+
   createOrder,
+
   getOrderById,
+
   getOrdersByUser,
+
   getAllOrders,
+
   getAnyOrderById,
+
   updateOrderStatus,
+
+  addOrderReview,
 };
