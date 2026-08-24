@@ -6,6 +6,7 @@
 
 const orderModel = require("../models/orderModel");
 const cartModel = require("../models/cartModel");
+const pushNotificationService = require("../services/pushNotificationService");
 
 // ============================================================
 // CONFIG
@@ -346,6 +347,19 @@ const placeOrder =
               "Order was not created",
           });
       }
+
+      // ======================================================
+      // PUSH NOTIFICATION — ORDER PLACED
+      // ======================================================
+      //
+      // Fire-and-forget: no "await", and it never throws, so a
+      // push failure can never block or fail the order response.
+      // ======================================================
+
+      pushNotificationService.sendOrderPlacedNotification(
+        userId,
+        order
+      );
 
       // ======================================================
       // BOOKING TIME

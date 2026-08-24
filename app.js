@@ -9,6 +9,8 @@ const orderRoutes = require("./routes/orderRoutes");
 const adminOrderRoutes = require("./routes/adminOrderRoutes");
 const addressRoutes =
   require("./routes/addressRoutes");
+const deviceTokenRoutes =
+  require("./routes/deviceTokenRoutes");
 const {
   notFound,
   errorHandler,
@@ -164,6 +166,15 @@ app.use(
 app.use(
   "/api/orders",
   orderRoutes
+);
+
+// =====================================================
+// PUSH NOTIFICATIONS (FCM device tokens)
+// =====================================================
+
+app.use(
+  "/api/device-token",
+  deviceTokenRoutes
 );
 
 // =====================================================
