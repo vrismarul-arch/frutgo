@@ -1,4 +1,7 @@
-// backend/config/db.js
+// backend/config/s
+
+
+
 
 const mysql = require("mysql2/promise");
 
