@@ -7,10 +7,8 @@ const productRoutes = require("./routes/productRoutes");
 const cartRoutes = require("./routes/cartRoutes");
 const orderRoutes = require("./routes/orderRoutes");
 const adminOrderRoutes = require("./routes/adminOrderRoutes");
-const addressRoutes =
-  require("./routes/addressRoutes");
-const deviceTokenRoutes =
-  require("./routes/deviceTokenRoutes");
+const addressRoutes = require("./routes/addressRoutes");
+
 const {
   notFound,
   errorHandler,
@@ -23,17 +21,14 @@ const app = express();
 // =====================================================
 
 const allowedOrigins = [
-  // Vite development
   "http://localhost:5173",
-
-  // Production website
   "https://frutgodelivery.netlify.app",
 ];
 
 const corsOptions = {
   origin: (origin, callback) => {
     // Allow requests without Origin
-    // Example: Postman, curl, server-to-server
+    // Postman, curl, server-to-server etc.
     if (!origin) {
       return callback(null, true);
     }
@@ -44,29 +39,19 @@ const corsOptions = {
     }
 
     // Allow Flutter Web localhost
-    // Example:
-    // http://localhost:55731
-    // http://localhost:52143
-    // http://localhost:8080
     if (/^http:\/\/localhost:\d+$/.test(origin)) {
       return callback(null, true);
     }
 
     // Allow Flutter Web using 127.0.0.1
-    // Example:
-    // http://127.0.0.1:55731
     if (/^http:\/\/127\.0\.0\.1:\d+$/.test(origin)) {
       return callback(null, true);
     }
 
-    console.log(
-      `CORS blocked origin: ${origin}`
-    );
+    console.log(`CORS blocked origin: ${origin}`);
 
     return callback(
-      new Error(
-        `Origin ${origin} not allowed by CORS`
-      )
+      new Error(`Origin ${origin} not allowed by CORS`)
     );
   },
 
@@ -106,76 +91,49 @@ app.use(
 // HEALTH CHECK
 // =====================================================
 
-app.get(
-  "/api/health",
-  (req, res) => {
-    res.status(200).json({
-      status: "ok",
-      message: "Frutgo API is running",
-    });
-  }
-);
+app.get("/api/health", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    message: "Frutgo API is running",
+  });
+});
 
 // =====================================================
 // ADMIN ROUTES
 // =====================================================
 
 // Admin authentication
-app.use(
-  "/api/admin",
-  authRoutes
-);
+app.use("/api/admin", authRoutes);
 
 // Admin product management
-app.use(
-  "/api/admin/products",
-  productRoutes
-);
+app.use("/api/admin/products", productRoutes);
 
 // Admin order management
-app.use(
-  "/api/admin/orders",
-  adminOrderRoutes
-);
+app.use("/api/admin/orders", adminOrderRoutes);
 
 // =====================================================
 // CUSTOMER AUTH
 // =====================================================
 
-app.use(
-  "/api/users/auth",
-  userAuthRoutes
-);
+app.use("/api/users/auth", userAuthRoutes);
 
 // =====================================================
 // CUSTOMER CART
 // =====================================================
 
-app.use(
-  "/api/cart",
-  cartRoutes
-);
+app.use("/api/cart", cartRoutes);
+
+// =====================================================
+// CUSTOMER ADDRESSES
+// =====================================================
+
+app.use("/api/addresses", addressRoutes);
 
 // =====================================================
 // CUSTOMER ORDERS
 // =====================================================
-app.use(
-  "/api/addresses",
-  addressRoutes
-);
-app.use(
-  "/api/orders",
-  orderRoutes
-);
 
-// =====================================================
-// PUSH NOTIFICATIONS (FCM device tokens)
-// =====================================================
-
-app.use(
-  "/api/device-token",
-  deviceTokenRoutes
-);
+app.use("/api/orders", orderRoutes);
 
 // =====================================================
 // 404
