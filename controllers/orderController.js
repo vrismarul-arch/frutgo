@@ -168,8 +168,8 @@ const placeOrder = async (req, res) => {
     // TOTAL
     // ========================================================
 
-    const freeDeliveryAbove = 499;
-    const baseDeliveryFee = 25;
+    const freeDeliveryAbove = 299;
+    const baseDeliveryFee = 45;
 
     const subtotal = Number(cart.subtotal) || 0;
 
