@@ -11,7 +11,7 @@ const getOrCreateCart = async (userId) => {
 };
 
 // Fetches the full cart for a user, with product + variant details joined
-// so the frontend (CartDrawer) can render name/image/price directly.
+// so the frontend (CartDrawer) can render name/image/price/category directly.
 const getCartByUser = async (userId) => {
   const cartId = await getOrCreateCart(userId);
 
@@ -22,6 +22,7 @@ const getCartByUser = async (userId) => {
         p.id AS product_id,
         p.name,
         p.image,
+        p.category,
         pv.id AS variant_id,
         pv.label AS variant,
         pv.unit,
