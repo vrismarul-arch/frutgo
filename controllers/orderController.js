@@ -14,6 +14,36 @@ const cartModel = require("../models/cartModel");
 const DELIVERY_TIME_MINUTES = 45;
 
 // ============================================================
+// FREE DELIVERY (fruit salads on the weekly plan)
+// ============================================================
+//
+// Mirrors the rule used on the frontend (CartDrawer.jsx /
+// Checkout.jsx) so the price the backend actually charges always
+// matches what the customer saw before placing the order. Only a
+// cart made up entirely of fruit-salad items on the "1 Week" plan
+// gets delivery free regardless of subtotal; "1 Day" / "1 Month"
+// fruit salad items fall back to the normal freeDeliveryAbove
+// threshold, same as any other item.
+// ============================================================
+
+const FREE_DELIVERY_CATEGORIES = ["fruit salads", "salad", "salads"];
+const FREE_DELIVERY_VARIANT = "1 Week";
+
+const isWeeklyVariant = (variant = "") =>
+  String(variant).trim().toLowerCase() ===
+  FREE_DELIVERY_VARIANT.toLowerCase();
+
+const isFreeDeliveryEligible = (cartItems = []) =>
+  cartItems.length > 0 &&
+  cartItems.every((item) => {
+    const isFreeCategory = FREE_DELIVERY_CATEGORIES.includes(
+      String(item.category || "").trim().toLowerCase()
+    );
+
+    return isFreeCategory && isWeeklyVariant(item.variant);
+  });
+
+// ============================================================
 // VALIDATE ORDER
 // ============================================================
 
@@ -173,10 +203,15 @@ const placeOrder = async (req, res) => {
 
     const subtotal = Number(cart.subtotal) || 0;
 
-    const deliveryFee =
-      subtotal >= freeDeliveryAbove
-        ? 0
-        : baseDeliveryFee;
+    // Weekly-fruit-salad-only carts always get free delivery;
+    // everything else falls back to the ₹299 threshold rule.
+    const freeDeliveryCartOnly = isFreeDeliveryEligible(cart.items);
+
+    const deliveryFee = freeDeliveryCartOnly
+      ? 0
+      : subtotal >= freeDeliveryAbove
+      ? 0
+      : baseDeliveryFee;
 
     const total = subtotal + deliveryFee;
 
